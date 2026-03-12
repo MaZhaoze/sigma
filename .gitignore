@@ -1,0 +1,50 @@
+# =========================
+# Editor / IDE
+# =========================
+.vscode/
+.idea/
+
+# =========================
+# Build outputs
+# =========================
+*.exe
+*.out
+*.obj
+*.o
+*.dll
+*.lib
+*.a
+*.pdb
+*.ilk
+*.exp
+*.d
+
+# =========================
+# Build directories
+# =========================
+build/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+
+# =========================
+# Logs / temp
+# =========================
+*.log
+*.tmp
+*.cache
+
+# =========================
+# OS junk
+# =========================
+Thumbs.db
+Desktop.ini
+
+# =========================
+# Chess engine local assets
+# =========================
+*.nnue
+
+# Optional local experiment folders
+nnue_probe/
+sf_ref/

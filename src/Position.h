@@ -6,6 +6,37 @@
 
 // Position representation and move make/undo with incremental Zobrist.
 
+// =====================
+// Bitboard 基础
+// 说明：
+// 1. 先与现有 mailbox(board[64]) 双轨共存
+// 2. 第一阶段先支持“从 board 重建 bitboard”
+// 3. 后续再把 attacks / movegen / do_move 增量维护逐步接上
+// =====================
+using Bitboard = uint64_t;
+
+// 不依赖 types.h 里的数量常量，自己定义最小可用版本
+static constexpr int BB_COLOR_NB = 2;      // WHITE / BLACK
+static constexpr int BB_PTYPE_NB = 7;      // NONE..KING（直接用 PieceType 当下标）
+
+inline constexpr Bitboard sq_bb(int sq) {
+    return 1ULL << sq;
+}
+
+inline int bb_popcount(Bitboard b) {
+    return __builtin_popcountll(b);
+}
+
+inline int bb_lsb(Bitboard b) {
+    return __builtin_ctzll(b);
+}
+
+inline int bb_pop_lsb(Bitboard& b) {
+    int s = bb_lsb(b);
+    b &= (b - 1);
+    return s;
+}
+
 // 王车易位权 bitmask
 enum CastlingRight : int {
     CR_NONE = 0,
@@ -39,6 +70,10 @@ struct Undo {
 
 // 棋盘局面
 struct Position {
+    // =====================
+    // 传统 mailbox 表示
+    // 先保留，保证现有逻辑兼容
+    // =====================
     Piece board[64];
     Color side = WHITE;
 
@@ -48,6 +83,23 @@ struct Position {
     int fullmoveNumber = 1;
 
     uint64_t zobKey = 0;
+
+    // =====================
+    // Bitboard 表示
+    // 约定：
+    // pieces[color][pieceType]
+    // color: WHITE / BLACK
+    // pieceType: NONE..KING
+    //
+    // 其中 pieces[*][NONE] 预留不用，
+    // 后续可以直接用 type_of(p) 当数组下标，最省事。
+    // =====================
+    Bitboard pieces[BB_COLOR_NB][BB_PTYPE_NB]{};
+    Bitboard occ[BB_COLOR_NB]{};
+    Bitboard occAll = 0ULL;
+
+    // 王所在格，便于 in_check / attacks 快速使用
+    int kingSq[BB_COLOR_NB]{-1, -1};
 
     Position();
 
@@ -72,6 +124,18 @@ struct Position {
     // 走子 / 悔棋
     Undo do_move(Move m);
     void undo_move(Move m, const Undo& u);
+
+    // =====================
+    // Bitboard 维护 / 调试
+    // =====================
+
+    // 从当前 board[64] 全量重建 bitboard 状态
+    // 第一阶段优先保证正确性，再考虑 do_move/undo_move 增量维护
+    void rebuild_bitboards();
+
+    // 验证 board[64] 与 bitboard 状态是否一致
+    // 调试阶段非常有用
+    bool verify_bitboards() const;
 
     // 调试辅助
     int king_square(Color c) const;

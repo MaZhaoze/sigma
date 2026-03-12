@@ -7,6 +7,53 @@
 
 #include "ZobristTables.h"
 
+namespace {
+
+// =====================
+// bitboard 增量维护小工具
+// 说明：
+// 1. 这些函数只负责维护 bitboard，不碰 board[]
+// 2. 调用者负责保证参数合法
+// =====================
+inline void bb_add_piece(Position& pos, int sq, Piece p) {
+    if (p == NO_PIECE)
+        return;
+
+    const Color c = color_of(p);
+    const PieceType pt = type_of(p);
+    const Bitboard b = sq_bb(sq);
+
+    pos.pieces[(int)c][(int)pt] |= b;
+    pos.occ[(int)c] |= b;
+    pos.occAll |= b;
+
+    if (pt == KING)
+        pos.kingSq[(int)c] = sq;
+}
+
+inline void bb_remove_piece(Position& pos, int sq, Piece p) {
+    if (p == NO_PIECE)
+        return;
+
+    const Color c = color_of(p);
+    const PieceType pt = type_of(p);
+    const Bitboard b = sq_bb(sq);
+
+    pos.pieces[(int)c][(int)pt] &= ~b;
+    pos.occ[(int)c] &= ~b;
+    pos.occAll &= ~b;
+
+    if (pt == KING)
+        pos.kingSq[(int)c] = -1;
+}
+
+inline void bb_move_piece(Position& pos, int from, int to, Piece p) {
+    bb_remove_piece(pos, from, p);
+    bb_add_piece(pos, to, p);
+}
+
+} // namespace
+
 // =====================
 // 构造函数
 // 默认清空后设成初始局面
@@ -30,6 +77,15 @@ void Position::clear() {
     halfmoveClock = 0;
     fullmoveNumber = 1;
     zobKey = 0;
+
+    // bitboard 同步清空
+    for (int c = 0; c < BB_COLOR_NB; ++c) {
+        occ[c] = 0ULL;
+        kingSq[c] = -1;
+        for (int pt = 0; pt < BB_PTYPE_NB; ++pt)
+            pieces[c][pt] = 0ULL;
+    }
+    occAll = 0ULL;
 }
 
 // =====================
@@ -197,6 +253,80 @@ void Position::apply_zobrist_delta_after_move(const Undo& u, Move m) {
 }
 
 // =====================
+// 从当前 board[64] 全量重建 bitboard
+// 第一阶段优先保证正确性，
+// 后续再考虑 do_move/undo_move 的增量维护
+// =====================
+void Position::rebuild_bitboards() {
+    for (int c = 0; c < BB_COLOR_NB; ++c) {
+        occ[c] = 0ULL;
+        kingSq[c] = -1;
+        for (int pt = 0; pt < BB_PTYPE_NB; ++pt)
+            pieces[c][pt] = 0ULL;
+    }
+    occAll = 0ULL;
+
+    for (int sq = 0; sq < 64; ++sq) {
+        Piece p = board[sq];
+        if (p == NO_PIECE)
+            continue;
+
+        Color c = color_of(p);
+        PieceType pt = type_of(p);
+
+        Bitboard b = sq_bb(sq);
+        pieces[(int)c][(int)pt] |= b;
+        occ[(int)c] |= b;
+        occAll |= b;
+
+        if (pt == KING)
+            kingSq[(int)c] = sq;
+    }
+}
+
+// =====================
+// 验证 board[64] 与 bitboard 是否一致
+// 调试阶段非常有用
+// =====================
+bool Position::verify_bitboards() const {
+    Bitboard p[BB_COLOR_NB][BB_PTYPE_NB]{};
+    Bitboard o[BB_COLOR_NB]{};
+    Bitboard all = 0ULL;
+    int ks[BB_COLOR_NB] = {-1, -1};
+
+    for (int sq = 0; sq < 64; ++sq) {
+        Piece piece = board[sq];
+        if (piece == NO_PIECE)
+            continue;
+
+        Color c = color_of(piece);
+        PieceType pt = type_of(piece);
+        Bitboard b = sq_bb(sq);
+
+        p[(int)c][(int)pt] |= b;
+        o[(int)c] |= b;
+        all |= b;
+
+        if (pt == KING)
+            ks[(int)c] = sq;
+    }
+
+    for (int c = 0; c < BB_COLOR_NB; ++c) {
+        if (occ[c] != o[c])
+            return false;
+        if (kingSq[c] != ks[c])
+            return false;
+
+        for (int pt = 0; pt < BB_PTYPE_NB; ++pt) {
+            if (pieces[c][pt] != p[c][pt])
+                return false;
+        }
+    }
+
+    return occAll == all;
+}
+
+// =====================
 // 设为标准初始局面
 // =====================
 void Position::set_startpos() {
@@ -236,6 +366,7 @@ void Position::set_startpos() {
     halfmoveClock = 0;
     fullmoveNumber = 1;
 
+    rebuild_bitboards();
     recompute_zobrist();
 }
 
@@ -321,6 +452,7 @@ void Position::set_fen(const std::string& fen) {
     if (fullmoveNumber <= 0)
         fullmoveNumber = 1;
 
+    rebuild_bitboards();
     recompute_zobrist();
 }
 
@@ -414,8 +546,12 @@ Undo Position::do_move(Move m) {
         u.epCapturedSq = capSq;
         u.captured = board[capSq];
 
+        // bitboard / board：移除被吃兵
+        bb_remove_piece(*this, capSq, u.captured);
         board[capSq] = NO_PIECE;
 
+        // bitboard / board：移动兵
+        bb_move_piece(*this, from, to, movedPiece);
         board[to] = movedPiece;
         board[from] = NO_PIECE;
     }
@@ -425,6 +561,7 @@ Undo Position::do_move(Move m) {
     // =====================
     else if (flags_of(m) & MF_CASTLE) {
         // 先动王
+        bb_move_piece(*this, from, to, movedPiece);
         board[to] = movedPiece;
         board[from] = NO_PIECE;
 
@@ -449,7 +586,9 @@ Undo Position::do_move(Move m) {
 
         // 真正动车
         if (u.rookFrom != -1 && u.rookTo != -1) {
-            board[u.rookTo] = board[u.rookFrom];
+            Piece rook = board[u.rookFrom];
+            bb_move_piece(*this, u.rookFrom, u.rookTo, rook);
+            board[u.rookTo] = rook;
             board[u.rookFrom] = NO_PIECE;
         }
     }
@@ -458,6 +597,10 @@ Undo Position::do_move(Move m) {
     // 普通走子 / 普通吃子 / 升变
     // =====================
     else {
+        // 普通吃子：先移除目标格的被吃子
+        if (u.captured != NO_PIECE)
+            bb_remove_piece(*this, to, u.captured);
+
         board[to] = movedPiece;
         board[from] = NO_PIECE;
 
@@ -470,7 +613,14 @@ Undo Position::do_move(Move m) {
             else if (promo == 3) pt = ROOK;
             else if (promo == 4) pt = QUEEN;
 
+            // bitboard：兵从 from 消失，升变子出现在 to
+            bb_remove_piece(*this, from, movedPiece);
+            bb_add_piece(*this, to, make_piece(us, pt));
+
             board[to] = make_piece(us, pt);
+        } else {
+            // bitboard：普通移动
+            bb_move_piece(*this, from, to, movedPiece);
         }
 
         // 兵双步时设置 EP 格
@@ -516,24 +666,47 @@ void Position::undo_move(Move m, const Undo& u) {
 
     // 如果是易位，先把车移回去
     if (u.rookFrom != -1 && u.rookTo != -1) {
-        board[u.rookFrom] = board[u.rookTo];
+        Piece rook = board[u.rookTo];
+        bb_move_piece(*this, u.rookTo, u.rookFrom, rook);
+        board[u.rookFrom] = rook;
         board[u.rookTo] = NO_PIECE;
     }
 
     // 如果是吃过路兵，恢复方式和普通吃子不同
     if (u.epCapturedSq != -1) {
+        // 移回走子的兵
+        bb_move_piece(*this, to, from, u.moved);
         board[from] = u.moved;
         board[to] = NO_PIECE; // EP 落点本来是空的
+
+        // 恢复被吃兵
+        bb_add_piece(*this, u.epCapturedSq, u.captured);
         board[u.epCapturedSq] = u.captured;
+
         zobKey = u.prevKey;
         return;
     }
 
     // 普通恢复（包括升变）
-    // 注意直接把 from 放回“原本移动的子”
-    // 所以即使刚才是升变，这里也能正确恢复成兵
-    board[from] = u.moved;
-    board[to] = u.captured;
+    // 如果刚才是升变，那么 to 上不是 u.moved，而是升变后的子
+    if (promo_of(m) && type_of(u.moved) == PAWN) {
+        Piece promoted = board[to];
+        bb_remove_piece(*this, to, promoted);
+        bb_add_piece(*this, from, u.moved);
+
+        board[from] = u.moved;
+        board[to] = NO_PIECE;
+    } else {
+        bb_move_piece(*this, to, from, u.moved);
+        board[from] = u.moved;
+        board[to] = NO_PIECE;
+    }
+
+    // 恢复普通吃子
+    if (u.captured != NO_PIECE) {
+        bb_add_piece(*this, to, u.captured);
+        board[to] = u.captured;
+    }
 
     zobKey = u.prevKey;
 }
@@ -543,6 +716,12 @@ void Position::undo_move(Move m, const Undo& u) {
 // 主要给 in_check / 调试用
 // =====================
 int Position::king_square(Color c) const {
+    // 优先返回 bitboard 维护的王格
+    int ks = kingSq[(int)c];
+    if (ks != -1)
+        return ks;
+
+    // 兜底：如果 bitboard 还没接上某些路径，就退回扫描
     Piece king = (c == WHITE) ? W_KING : B_KING;
 
     for (int i = 0; i < 64; i++) {

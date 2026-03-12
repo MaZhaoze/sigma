@@ -1,0 +1,12 @@
+uci
+isready
+ucinewgame
+position fen r1bqk1nr/pp1pppbp/2n3p1/8/3NP3/3BB3/PPP2PPP/RN1QK2R b KQkq - 3 6
+go depth 10
+position fen r1bqkb1r/1ppp1ppp/p1nn4/4p3/B7/5N2/PPPP1PPP/RNBQR1K1 w kq - 2 7
+go depth 10
+position fen r1bqkb1r/1ppp2pp/p1Nn1p2/8/B7/8/PPPP1PPP/RNBQR1K1 b kq - 0 8
+go depth 10
+position fen r1b1k2r/2ppb1pp/p2n1p2/8/p7/2N5/PPPPQPPP/R1B1R1K1 w kq - 0 12
+go depth 10
+quit
